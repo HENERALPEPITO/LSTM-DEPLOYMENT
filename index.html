@@ -2,88 +2,71 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LSTM Case Prediction</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            text-align: center;
+        }
+        #predictions { 
+            margin-top: 20px; 
+        }
+        canvas { 
+            width: 100%; 
+            max-width: 600px; 
             margin: 0 auto;
-            padding: 20px;
         }
-        #predictionChart {
-            max-width: 100%;
-            height: 400px;
-        }
-        .file-upload {
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
             margin-bottom: 20px;
         }
     </style>
 </head>
 <body>
-    <h1>LSTM Case Prediction</h1>
+    <h1>LSTM Case Predictions</h1>
+    <button onclick="getPredictions()">Predict Next 5 Cases</button>
     
-    <div class="file-upload">
-        <input type="file" id="csvFile" accept=".csv">
-        <button onclick="predictCases()">Predict Cases</button>
+    <div id="predictions">
+        <canvas id="predictionsChart"></canvas>
     </div>
 
-    <canvas id="predictionChart"></canvas>
-
     <script>
-        let chart = null;
-
-        async function predictCases() {
-            const fileInput = document.getElementById('csvFile');
-            const file = fileInput.files[0];
-
-            if (!file) {
-                alert('Please select a CSV file');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('file', file);
-
+        async function getPredictions() {
             try {
-                const response = await fetch('/predict', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    throw new Error('Prediction failed');
+                const response = await fetch('/predict');
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
                 }
 
-                const result = await response.json();
-
+                // Create chart
+                const ctx = document.getElementById('predictionsChart').getContext('2d');
+                
                 // Destroy existing chart if it exists
-                if (chart) {
-                    chart.destroy();
+                if (window.myChart instanceof Chart) {
+                    window.myChart.destroy();
                 }
 
-                // Create new chart
-                const ctx = document.getElementById('predictionChart').getContext('2d');
-                chart = new Chart(ctx, {
-                    type: 'line',
+                window.myChart = new Chart(ctx, {
+                    type: 'bar',
                     data: {
-                        labels: result.actual_dates,
+                        labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'],
                         datasets: [{
                             label: 'Predicted Cases',
-                            data: result.predictions,
-                            borderColor: 'blue',
-                            backgroundColor: 'rgba(0, 0, 255, 0.1)'
+                            data: data.predictions,
+                            backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 1
                         }]
                     },
                     options: {
-                        responsive: true,
-                        plugins: {
-                            title: {
-                                display: true,
-                                text: 'Case Predictions'
-                            }
-                        },
                         scales: {
                             y: {
                                 beginAtZero: true,
@@ -91,20 +74,20 @@
                                     display: true,
                                     text: 'Number of Cases'
                                 }
-                            },
-                            x: {
-                                title: {
-                                    display: true,
-                                    text: 'Date'
-                                }
+                            }
+                        },
+                        responsive: true,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Predicted Weekly Cases'
                             }
                         }
                     }
                 });
-
             } catch (error) {
-                console.error('Error:', error);
-                alert('Prediction failed: ' + error.message);
+                console.error('Error fetching predictions:', error);
+                alert('Failed to fetch predictions');
             }
         }
     </script>

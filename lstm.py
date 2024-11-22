@@ -3,90 +3,127 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, accuracy_score, precision_score, recall_score
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, save_model, load_model
 from tensorflow.keras.layers import LSTM, Dense, Input
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.models import load_model
-import joblib  # To save scaler
+import joblib
 
-def load_and_preprocess_data(file_path):
-    data = pd.read_csv(file_path)
-    data['Time'] = pd.to_datetime(data['Time'] + '-1', format='%Y-w%W-%w')
+class LSTMPredictor:
+    def __init__(self, file_path='completefinaldatasets.csv', window_size=3):
+        self.file_path = file_path
+        self.window_size = window_size
+        self.model = None
+        self.scaler_features = None
+        self.scaler_target = None
 
-    features = data[['Rainfall', 'Temperature', 'Humidity']]
-    target = data['Cases']
+    def load_and_preprocess_data(self):
+        data = pd.read_csv(self.file_path)
 
-    scaler_features = MinMaxScaler()
-    scaler_target = MinMaxScaler()
+        # Select features and target
+        features = data[['Rainfall', 'Temperature', 'Humidity']]
+        target = data['Cases']
 
-    normalized_features = scaler_features.fit_transform(features)
-    normalized_target = scaler_target.fit_transform(target.values.reshape(-1, 1))
+        # Initialize scalers
+        self.scaler_features = MinMaxScaler()
+        self.scaler_target = MinMaxScaler()
 
-    normalized_data = pd.DataFrame(normalized_features, columns=features.columns, index=data.index)
-    normalized_data['Cases'] = normalized_target
+        # Normalize features and target
+        normalized_features = self.scaler_features.fit_transform(features)
+        normalized_target = self.scaler_target.fit_transform(target.values.reshape(-1, 1))
 
-    return normalized_data, scaler_target, scaler_features
+        # Combine normalized features and target
+        normalized_data = np.hstack((normalized_features, normalized_target))
 
-def create_sequences(data, target, window_size):
-    X, y = [], []
-    for i in range(window_size, len(data)):
-        X.append(data[i-window_size:i])  # Collect 'window_size' rows
-        y.append(target[i])  # Target at the end of the sequence
-    return np.array(X), np.array(y)
+        return normalized_data
 
-def build_lstm_model(input_shape):
-    model = Sequential()
-    model.add(Input(shape=input_shape))  # input_shape = (time_steps, features)
-    model.add(LSTM(64, activation='relu'))
-    model.add(Dense(1))
-    model.compile(optimizer=Adam(learning_rate=0.0001), loss='mean_squared_error')
-    return model
+    def create_sequences(self, data):
+        X, y = [], []
+        for i in range(self.window_size, len(data)):
+            X.append(data[i-self.window_size:i, :-1])  # All features except last column
+            y.append(data[i, -1])  # Target (last column)
+        return np.array(X), np.array(y)
 
-def train_model(model, X_train, y_train, X_test, y_test, epochs=50, batch_size=1):
-    history = model.fit(X_train, y_train, epochs=epochs, batch_size=batch_size, validation_data=(X_test, y_test), verbose=1)
-    return history
+    def build_lstm_model(self, input_shape):
+        model = Sequential()
+        model.add(Input(shape=input_shape))
+        model.add(LSTM(64, activation='relu', return_sequences=False))
+        model.add(Dense(1))
+        model.compile(optimizer=Adam(learning_rate=0.0001), loss='mean_squared_error')
+        return model
 
-def evaluate_model(model, X, y, scaler_target):
-    y_pred = model.predict(X)
-    predicted_actual_scale = scaler_target.inverse_transform(y_pred)
-    y_actual_scale = scaler_target.inverse_transform(y)
+    def train_model(self, epochs=50, batch_size=1):
+        # Preprocess data
+        normalized_data = self.load_and_preprocess_data()
+        
+        # Create sequences
+        X, y = self.create_sequences(normalized_data)
 
-    mse = mean_squared_error(y_actual_scale, predicted_actual_scale)
-    rmse = np.sqrt(mse)
+        # Build and train model
+        self.model = self.build_lstm_model(X.shape[1:])
+        self.model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=1)
 
-    return predicted_actual_scale.flatten(), y_actual_scale.flatten(), mse, rmse
+    def predict_next_cases(self, steps=5):
+        if self.model is None:
+            raise ValueError("Model not trained. Call train_model() first.")
 
-def classify_predictions(predictions, actual_values, threshold=0.5):
-    pred_class = (predictions >= threshold).astype(int)
-    actual_class = (actual_values >= threshold).astype(int)
+        # Get the last sequence from the original data
+        data = pd.read_csv(self.file_path)
+        features = data[['Rainfall', 'Temperature', 'Humidity']]
+        normalized_features = self.scaler_features.transform(features)
 
-    accuracy = accuracy_score(actual_class, pred_class)
-    precision = precision_score(actual_class, pred_class)
-    recall = recall_score(actual_class, pred_class)
+        # Take the last window_size rows
+        last_sequence = normalized_features[-self.window_size:]
+        
+        # Predict next cases
+        predictions = []
+        current_sequence = last_sequence
 
-    return accuracy, precision, recall
+        for _ in range(steps):
+            # Reshape the sequence correctly
+            input_sequence = current_sequence.reshape(1, self.window_size, -1)
+            
+            # Predict next value
+            pred = self.model.predict(input_sequence)
+            predictions.append(pred[0, 0])
+
+            # Update current sequence by sliding window and appending prediction
+            current_sequence = np.roll(current_sequence, -1, axis=0)
+            current_sequence[-1, -1] = pred[0, 0]
+
+        # Scale predictions back to original values
+        predictions_scaled = self.scaler_target.inverse_transform(np.array(predictions).reshape(-1, 1))
+        return predictions_scaled.flatten()
+
+    def save_model_and_scalers(self):
+        # Save the trained model
+        self.model.save('lstm_model.h5')
+        
+        # Save scalers
+        joblib.dump(self.scaler_features, 'scaler_features.pkl')
+        joblib.dump(self.scaler_target, 'scaler_target.pkl')
+        print("Model and scalers saved successfully!")
+
+    @classmethod
+    def load_model_and_scalers(cls):
+        # Load the model
+        model = load_model('lstm_model.h5')
+        
+        # Load scalers
+        scaler_features = joblib.load('scaler_features.pkl')
+        scaler_target = joblib.load('scaler_target.pkl')
+        
+        return model, scaler_features, scaler_target
 
 if __name__ == "__main__":
-    # Load and preprocess data
-    data, scaler_target, scaler_features = load_and_preprocess_data('completefinaldatasets.csv')
-
-    # Prepare sequences
-    window_size = 10
-    X, y = create_sequences(data.values, data['Cases'].values, window_size)
-
-    # Split data
-    split_index = int(len(X) * 0.85)
-    X_train, X_test = X[:split_index], X[split_index:]
-    y_train, y_test = y[:split_index], y[split_index:]
-
-    # Build and train model
-    model = build_lstm_model(X_train.shape[1:])
-    train_model(model, X_train, y_train, X_test, y_test)
-
-    # Save the model to a file
-    model.save('lstm_model.h5')
-
-    # Save the scaler for future use in the FastAPI app
-    joblib.dump(scaler_target, 'scaler_target.pkl')
-    joblib.dump(scaler_features, 'scaler_features.pkl')
+    # Create predictor instance
+    predictor = LSTMPredictor()
+    
+    # Train the model
+    predictor.train_model()
+    
+    # Save model and scalers
+    predictor.save_model_and_scalers()
+    
+    # Predict next 5 cases
+    predictions = predictor.predict_next_cases()
+    print("Predicted next 5 cases:", predictions)
